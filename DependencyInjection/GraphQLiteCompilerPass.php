@@ -1,8 +1,9 @@
 <?php
 
 
-namespace TheCodingMachine\Graphqlite\Bundle\DependencyInjection;
+namespace TheCodingMachine\GraphQLite\Bundle\DependencyInjection;
 
+use Doctrine\Common\Annotations\PsrCachedReader;
 use GraphQL\Server\ServerConfig;
 use GraphQL\Validator\Rules\DisableIntrospection;
 use GraphQL\Validator\Rules\QueryComplexity;
@@ -11,42 +12,29 @@ use ReflectionNamedType;
 use Symfony\Component\Cache\Adapter\ApcuAdapter;
 use Symfony\Component\Cache\Adapter\PhpFilesAdapter;
 use Symfony\Component\Cache\Psr16Cache;
-use TheCodingMachine\GraphQLite\Mappers\StaticClassListTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\StaticClassListTypeMapperFactory;
+use Webmozart\Assert\Assert;
 use function class_exists;
-use Doctrine\Common\Annotations\AnnotationException;
 use Doctrine\Common\Annotations\AnnotationReader as DoctrineAnnotationReader;
 use Doctrine\Common\Annotations\AnnotationRegistry;
-use Doctrine\Common\Annotations\CachedReader;
-use Doctrine\Common\Cache\ApcuCache;
-use function error_log;
 use Mouf\Composer\ClassNameMapper;
 use Psr\SimpleCache\CacheInterface;
 use ReflectionParameter;
-use Symfony\Component\Cache\Simple\ApcuCache as SymfonyApcuCache;
-use Symfony\Component\Cache\Simple\PhpFilesCache as SymfonyPhpFilesCache;
 use function filter_var;
 use function function_exists;
-use GraphQL\Type\Definition\InputObjectType;
-use GraphQL\Type\Definition\ObjectType;
-use Psr\Container\ContainerInterface;
 use ReflectionClass;
 use ReflectionMethod;
 use function ini_get;
 use function interface_exists;
-use function php_sapi_name;
-use function str_replace;
 use function strpos;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Reference;
-use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpFoundation\Session\SessionInterface;
 use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 use Symfony\Component\Security\Core\Encoder\UserPasswordEncoderInterface;
 use Symfony\Component\Security\Core\User\UserInterface;
-use Symfony\Component\Security\Core\User\UserProviderInterface;
 use TheCodingMachine\CacheUtils\ClassBoundCache;
 use TheCodingMachine\CacheUtils\ClassBoundCacheContract;
 use TheCodingMachine\CacheUtils\ClassBoundCacheContractInterface;
@@ -55,36 +43,21 @@ use TheCodingMachine\CacheUtils\FileBoundCache;
 use TheCodingMachine\ClassExplorer\Glob\GlobClassExplorer;
 use TheCodingMachine\GraphQLite\AggregateControllerQueryProviderFactory;
 use TheCodingMachine\GraphQLite\AnnotationReader;
-use TheCodingMachine\GraphQLite\Annotations\AbstractRequest;
 use TheCodingMachine\GraphQLite\Annotations\Autowire;
 use TheCodingMachine\GraphQLite\Annotations\Field;
 use TheCodingMachine\GraphQLite\Annotations\Mutation;
-use TheCodingMachine\GraphQLite\Annotations\Parameter;
 use TheCodingMachine\GraphQLite\Annotations\Query;
-use TheCodingMachine\Graphqlite\Bundle\Controller\GraphQL\LoginController;
-use TheCodingMachine\Graphqlite\Bundle\Controller\GraphQL\MeController;
-use TheCodingMachine\GraphQLite\FieldsBuilder;
-use TheCodingMachine\GraphQLite\FieldsBuilderFactory;
+use TheCodingMachine\GraphQLite\Bundle\Controller\GraphQL\LoginController;
+use TheCodingMachine\GraphQLite\Bundle\Controller\GraphQL\MeController;
 use TheCodingMachine\GraphQLite\GraphQLRuntimeException as GraphQLException;
-use TheCodingMachine\GraphQLite\InputTypeGenerator;
-use TheCodingMachine\GraphQLite\InputTypeUtils;
-use TheCodingMachine\GraphQLite\Mappers\CompositeTypeMapper;
-use TheCodingMachine\GraphQLite\Mappers\GlobTypeMapper;
-use TheCodingMachine\GraphQLite\Mappers\RecursiveTypeMapperInterface;
-use TheCodingMachine\GraphQLite\Mappers\Root\CompositeRootTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\StaticTypeMapper;
-use TheCodingMachine\GraphQLite\NamingStrategy;
 use TheCodingMachine\GraphQLite\SchemaFactory;
-use TheCodingMachine\GraphQLite\TypeGenerator;
-use TheCodingMachine\GraphQLite\Types\MutableObjectType;
-use TheCodingMachine\GraphQLite\Types\ResolvableInputObjectType;
-use function var_dump;
-use TheCodingMachine\Graphqlite\Bundle\Types\SymfonyUserInterfaceType;
+use TheCodingMachine\GraphQLite\Bundle\Types\SymfonyUserInterfaceType;
 
 /**
  * Detects controllers and types automatically and tag them.
  */
-class GraphqliteCompilerPass implements CompilerPassInterface
+class GraphQLiteCompilerPass implements CompilerPassInterface
 {
     /**
      * @var AnnotationReader
@@ -92,18 +65,29 @@ class GraphqliteCompilerPass implements CompilerPassInterface
     private $annotationReader;
 
     /**
+     * @var string
+     */
+    private $cacheDir;
+
+    /**
      * You can modify the container here before it is dumped to PHP code.
      */
     public function process(ContainerBuilder $container): void
     {
         $reader = $this->getAnnotationReader();
+        $cacheDir = $container->getParameter('kernel.cache_dir');
+        Assert::string($cacheDir);
+        $this->cacheDir = $cacheDir;
         //$inputTypeUtils = new InputTypeUtils($reader, $namingStrategy);
 
         // Let's scan the whole container and tag the services that belong to the namespace we want to inspect.
         $controllersNamespaces = $container->getParameter('graphqlite.namespace.controllers');
+        Assert::isIterable($controllersNamespaces);
         $typesNamespaces = $container->getParameter('graphqlite.namespace.types');
+        Assert::isIterable($typesNamespaces);
 
         $firewallName = $container->getParameter('graphqlite.security.firewall_name');
+        Assert::string($firewallName);
         $firewallConfigServiceName = 'security.firewall.map.config.'.$firewallName;
 
         // 2 seconds of TTL in environment mode. Otherwise, let's cache forever!
@@ -177,14 +161,23 @@ class GraphqliteCompilerPass implements CompilerPassInterface
         if ($container->getParameter('graphqlite.security.introspection') === false) {
             $rulesDefinition[] =  $container->findDefinition(DisableIntrospection::class);
         }
-        if ($container->getParameter('graphqlite.security.maximum_query_complexity')) {
-            $complexity = (int) $container->getParameter('graphqlite.security.maximum_query_complexity');
-            $rulesDefinition[] =  $container->findDefinition(QueryComplexity::class)->setArgument(0, $complexity);
+
+        $complexity = $container->getParameter('graphqlite.security.maximum_query_complexity');
+        if ($complexity) {
+            Assert::integerish($complexity);
+
+            $rulesDefinition[] =  $container->findDefinition(QueryComplexity::class)
+                ->setArgument(0, (int) $complexity);
         }
-        if ($container->getParameter('graphqlite.security.maximum_query_depth')) {
-            $depth = (int) $container->getParameter('graphqlite.security.maximum_query_depth');
-            $rulesDefinition[] =  $container->findDefinition(QueryDepth::class)->setArgument(0, $depth);
+
+        $depth = $container->getParameter('graphqlite.security.maximum_query_depth');
+        if ($depth) {
+            Assert::integerish($depth);
+
+            $rulesDefinition[] =  $container->findDefinition(QueryDepth::class)
+                ->setArgument(0, (int) $depth);
         }
+
         $serverConfigDefinition->addMethodCall('setValidationRules', [$rulesDefinition]);
 
         if ($disableMe === false) {
@@ -317,7 +310,6 @@ class GraphqliteCompilerPass implements CompilerPassInterface
         $taggedServices = $container->findTaggedServiceIds($tag);
 
         foreach ($taggedServices as $id => $tags) {
-            // add the transport service to the TransportChain service
             $schemaFactory->addMethodCall($methodName, [new Reference($id)]);
         }
     }
@@ -327,10 +319,10 @@ class GraphqliteCompilerPass implements CompilerPassInterface
      */
     private function makePublicInjectedServices(ReflectionClass $refClass, AnnotationReader $reader, ContainerBuilder $container, bool $isController): void
     {
-        $services = $this->getCodeCache()->get($refClass, function() use ($refClass, $reader, $container, $isController) {
+        $services = $this->getCodeCache()->get($refClass, function() use ($refClass, $reader, $container, $isController): array {
             $services = [];
             foreach ($refClass->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
-                $field = $reader->getRequestAnnotation($method, AbstractRequest::class);
+                $field = $reader->getRequestAnnotation($method, Field::class) ?? $reader->getRequestAnnotation($method, Query::class) ?? $reader->getRequestAnnotation($method, Mutation::class);
                 if ($field !== null) {
                     if ($isController) {
                         $services[$refClass->getName()] = $refClass->getName();
@@ -341,6 +333,7 @@ class GraphqliteCompilerPass implements CompilerPassInterface
                     }
                 }
             }
+
             return $services;
         });
 
@@ -420,10 +413,11 @@ class GraphqliteCompilerPass implements CompilerPassInterface
     {
         if ($this->annotationReader === null) {
             AnnotationRegistry::registerLoader('class_exists');
+
             $doctrineAnnotationReader = new DoctrineAnnotationReader();
 
             if (function_exists('apcu_fetch')) {
-                $doctrineAnnotationReader = new CachedReader($doctrineAnnotationReader, new ApcuCache(), true);
+                $doctrineAnnotationReader = new PsrCachedReader($doctrineAnnotationReader, new ApcuAdapter('graphqlite'), true);
             }
 
             $this->annotationReader = new AnnotationReader($doctrineAnnotationReader, AnnotationReader::LAX_MODE);
@@ -442,7 +436,7 @@ class GraphqliteCompilerPass implements CompilerPassInterface
             if (function_exists('apcu_fetch')) {
                 $this->cache = new Psr16Cache(new ApcuAdapter('graphqlite_bundle'));
             } else {
-                $this->cache = new Psr16Cache(new PhpFilesAdapter('graphqlite_bundle'));
+                $this->cache = new Psr16Cache(new PhpFilesAdapter('graphqlite_bundle', 0, $this->cacheDir));
             }
         }
         return $this->cache;
@@ -479,7 +473,7 @@ class GraphqliteCompilerPass implements CompilerPassInterface
                 // The autoloader might trigger errors if the file does not respect PSR-4 or if the
                 // Symfony DebugAutoLoader is installed. (see https://github.com/thecodingmachine/graphqlite/issues/216)
                 require_once $phpFile;
-                // Does it exists now?
+                // @phpstan-ignore-next-line Does it exist now?
                 if (! class_exists($className, false)) {
                     continue;
                 }

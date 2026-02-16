@@ -1,7 +1,7 @@
 <?php
 
 
-namespace TheCodingMachine\Graphqlite\Bundle\Controller;
+namespace TheCodingMachine\GraphQLite\Bundle\Controller;
 
 
 use Laminas\Diactoros\ResponseFactory;
@@ -11,12 +11,11 @@ use Laminas\Diactoros\UploadedFileFactory;
 use Symfony\Bridge\PsrHttpMessage\Factory\PsrHttpFactory;
 use TheCodingMachine\GraphQLite\Http\HttpCodeDecider;
 use function array_map;
-use GraphQL\Error\Debug;
 use GraphQL\Executor\ExecutionResult;
-use GraphQL\Executor\Promise\Promise;
 use GraphQL\Server\ServerConfig;
 use GraphQL\Server\StandardServer;
 use GraphQL\Upload\UploadMiddleware;
+use function class_exists;
 use function json_decode;
 use Psr\Http\Message\ServerRequestInterface;
 use RuntimeException;
@@ -26,29 +25,29 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Route;
 use Symfony\Component\Routing\RouteCollection;
-use TheCodingMachine\Graphqlite\Bundle\Context\SymfonyGraphQLContext;
+use TheCodingMachine\GraphQLite\Bundle\Context\SymfonyGraphQLContext;
 
 /**
  * Listens to every single request and forward Graphql requests to Graphql Webonix standardServer.
  */
-class GraphqliteController
+class GraphQLiteController
 {
     /**
      * @var HttpMessageFactoryInterface
      */
     private $httpMessageFactory;
-    /** @var bool|int */
+    /** @var int */
     private $debug;
     /**
      * @var ServerConfig
      */
     private $serverConfig;
 
-    public function __construct(ServerConfig $serverConfig, HttpMessageFactoryInterface $httpMessageFactory = null, ?int $debug = Debug::RETHROW_UNSAFE_EXCEPTIONS)
+    public function __construct(ServerConfig $serverConfig, HttpMessageFactoryInterface $httpMessageFactory = null, ?int $debug = null)
     {
         $this->serverConfig = $serverConfig;
         $this->httpMessageFactory = $httpMessageFactory ?: new PsrHttpFactory(new ServerRequestFactory(), new StreamFactory(), new UploadedFileFactory(), new ResponseFactory());
-        $this->debug = $debug ?? false;
+        $this->debug = $debug ?? $serverConfig->getDebugFlag();
     }
 
     public function loadRoutes(): RouteCollection
@@ -83,8 +82,10 @@ class GraphqliteController
         }
 
         // Let's parse the request and adapt it for file uploads.
-        $uploadMiddleware = new UploadMiddleware();
-        $psr7Request = $uploadMiddleware->processRequest($psr7Request);
+        if (class_exists(UploadMiddleware::class)) {
+            $uploadMiddleware = new UploadMiddleware();
+            $psr7Request = $uploadMiddleware->processRequest($psr7Request);
+        }
 
         return $this->handlePsr7Request($psr7Request, $request);
     }
@@ -103,18 +104,16 @@ class GraphqliteController
             return new JsonResponse($result->toArray($this->debug), $httpCodeDecider->decideHttpStatusCode($result));
         }
         if (is_array($result)) {
-            $finalResult = array_map(function (ExecutionResult $executionResult) {
+            $finalResult = array_map(function (ExecutionResult $executionResult): array {
                 return $executionResult->toArray($this->debug);
             }, $result);
             // Let's return the highest result.
             $statuses = array_map([$httpCodeDecider, 'decideHttpStatusCode'], $result);
-            $status = max($statuses);
+            $status = empty($statuses) ? 500 : max($statuses);
+
             return new JsonResponse($finalResult, $status);
         }
-        if ($result instanceof Promise) {
-            throw new RuntimeException('Only SyncPromiseAdapter is supported');
-        }
-        /* @phpstan-ignore-next-line */
-        throw new RuntimeException('Unexpected response from StandardServer::executePsrRequest'); // @codeCoverageIgnore
+
+        throw new RuntimeException('Only SyncPromiseAdapter is supported');
     }
 }

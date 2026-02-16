@@ -1,5 +1,5 @@
 <?php
-namespace TheCodingMachine\Graphqlite\Bundle\Controller\GraphQL;
+namespace TheCodingMachine\GraphQLite\Bundle\Controller\GraphQL;
 
 
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
@@ -13,7 +13,6 @@ use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Core\User\UserProviderInterface;
 use Symfony\Component\Security\Http\Event\InteractiveLoginEvent;
 use TheCodingMachine\GraphQLite\Annotations\Mutation;
-use TheCodingMachine\GraphQLite\Annotations\Query;
 
 class LoginController
 {
@@ -82,6 +81,7 @@ class LoginController
 
         // Fire the login event manually
         $event = new InteractiveLoginEvent($request, $token);
+        // @phpstan-ignore-next-line BC for Symfony4
         $this->eventDispatcher->dispatch($event, 'security.interactive_login');
 
         return $user;
