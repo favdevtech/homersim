@@ -35,7 +35,7 @@
     "symfony/security-bundle": "^4.2 || ^5",
     "symfony/yaml": "^4.2 || ^5",
     "phpstan/phpstan": "^0.12.90",
-    "beberlei/porpaginas": "^1.2",
+    "beberlei/porpaginas": "^1.2 || ^2.0",
     "php-coveralls/php-coveralls": "^2.1.0",
     "symfony/phpunit-bridge": "^5.3",
     "thecodingmachine/phpstan-strict-rules": "^v0.12.1",
